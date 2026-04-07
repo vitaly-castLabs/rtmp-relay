@@ -236,7 +236,10 @@ bool RtmpRelay::open_output() {
     }
 
     if ((output_ctx_->oformat->flags & AVFMT_NOFILE) == 0) {
-        rc = avio_open2(&output_ctx_->pb, config_.output_url.c_str(), AVIO_FLAG_WRITE, &output_ctx_->interrupt_callback, nullptr);
+        AVDictionary* options = nullptr;
+        av_dict_set(&options, "tcp_nodelay", "1", 0);
+        rc = avio_open2(&output_ctx_->pb, config_.output_url.c_str(), AVIO_FLAG_WRITE, &output_ctx_->interrupt_callback, &options);
+        av_dict_free(&options);
         if (rc < 0) {
             LOG << "avio_open2(" << config_.output_url << ") failed: " << av_error_string(rc);
             close_output();
