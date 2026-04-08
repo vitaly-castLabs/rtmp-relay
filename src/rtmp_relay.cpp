@@ -84,7 +84,7 @@ int RtmpRelay::relay_loop() {
                 av_write_trailer(output_ctx_);
             return 0;
         }
-        if (read_rc == AVERROR(EIO) && video_frame_count_ > 0) {
+        if (read_rc == AVERROR(EIO) && video_frame_count_.load(std::memory_order_relaxed) > 0) {
             LOG << "Input stream closed by peer";
             if (output_ctx_ != nullptr)
                 av_write_trailer(output_ctx_);
@@ -105,10 +105,11 @@ int RtmpRelay::relay_loop() {
         AVStream* input_stream = input_ctx_->streams[packet.stream_index];
 
         if (packet.stream_index == video_stream_index_) {
-            ++video_frame_count_;
-            LOG << "video frame #" << video_frame_count_ << " size=" << packet.size << " pts=" << format_ts(packet.pts, input_stream->time_base)
-                << " dts=" << format_ts(packet.dts, input_stream->time_base) << " duration=" << format_ts(packet.duration, input_stream->time_base)
-                << " key=" << ((packet.flags & AV_PKT_FLAG_KEY) != 0 ? "yes" : "no");
+            video_frame_count_.fetch_add(1, std::memory_order_relaxed);
+            last_video_pts_.store(packet.pts, std::memory_order_relaxed);
+        } else if (packet.stream_index == audio_stream_index_) {
+            audio_frame_count_.fetch_add(1, std::memory_order_relaxed);
+            last_audio_pts_.store(packet.pts, std::memory_order_relaxed);
         }
 
         if (!ensure_output()) {
@@ -125,7 +126,7 @@ int RtmpRelay::relay_loop() {
             }
 
             waiting_for_video_keyframe_ = false;
-            LOG << "Resumed output on video keyframe #" << video_frame_count_;
+            LOG << "Resumed output on video keyframe #" << video_frame_count_.load(std::memory_order_relaxed);
         }
 
         AVStream* output_stream = output_ctx_->streams[packet.stream_index];
@@ -179,9 +180,10 @@ bool RtmpRelay::open_input() {
 
     for (unsigned int i = 0; i < input_ctx_->nb_streams; ++i) {
         const AVStream* stream = input_ctx_->streams[i];
-        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && video_stream_index_ < 0) {
             video_stream_index_ = static_cast<int>(i);
-            break;
+        } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && audio_stream_index_ < 0) {
+            audio_stream_index_ = static_cast<int>(i);
         }
     }
 
@@ -299,8 +301,35 @@ void RtmpRelay::log_stream_map() const {
     }
 }
 
+void RtmpRelay::start_stats_timer(std::function<void()> on_tick) {
+    stats_timer_.expires_after(stats_period_);
+    stats_timer_.async_wait([this, on_tick = std::move(on_tick)](const asio::error_code& ec) {
+        if (ec == asio::error::operation_aborted)
+            return;
+        on_tick();
+        start_stats_timer(std::move(on_tick));
+    });
+}
+
+void RtmpRelay::cancel_stats_timer() {
+    stats_timer_.cancel();
+}
+
+void RtmpRelay::print_stats() const {
+    const AVStream* video_stream = input_ctx_->streams[video_stream_index_];
+    const int64_t video_pts = last_video_pts_.load(std::memory_order_relaxed);
+    const int64_t audio_pts = last_audio_pts_.load(std::memory_order_relaxed);
+    std::string video_ts = (video_pts != AV_NOPTS_VALUE) ? format_ts(video_pts, video_stream->time_base) : "N/A";
+    std::string audio_ts = (audio_pts != AV_NOPTS_VALUE) ? format_ts(audio_pts, input_ctx_->streams[audio_stream_index_]->time_base) : "N/A";
+    LOG << "stats: video_frames=" << video_frame_count_.load(std::memory_order_relaxed)
+        << " audio_frames=" << audio_frame_count_.load(std::memory_order_relaxed)
+        << " video_pts=" << video_ts << " audio_pts=" << audio_ts;
+}
+
 int RelayApp::run() {
     install_sigpipe_handler();
+
+    relay_.start_stats_timer([this] { print_stats(); });
 
     relay_thread_ = std::thread([this] {
         exit_code_ = relay_.run();
@@ -312,10 +341,16 @@ int RelayApp::run() {
     io_context_.run();
     relay_.request_stop();
 
+    relay_.cancel_stats_timer();
+
     if (relay_thread_.joinable())
         relay_thread_.join();
 
     return exit_code_.value_or(1);
+}
+
+void RelayApp::print_stats() {
+    relay_.print_stats();
 }
 
 void RelayApp::handle_stop_signal(asio::error_code ec, int signal_number) {
