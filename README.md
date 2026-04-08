@@ -15,6 +15,11 @@ cmake --build build
 ./build/rtmp_relay --listen-input rtmp://0.0.0.0:19350/live/in rtmp://127.0.0.1:19351/live/out
 ```
 
+Fire up the player:
+```bash
+ffplay -fflags nobuffer -flags low_delay -listen 1 rtmp://0.0.0.0:19351/live/out
+```
+
 Then publish into it with something like (stream a pre-encoded file in a loop):
 
 ```bash
