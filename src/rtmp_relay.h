@@ -29,7 +29,7 @@ public:
 
     void start_stats_timer(std::function<void()> on_tick);
     void cancel_stats_timer();
-    void print_stats() const;
+    void print_stats();
 
 private:
     int relay_loop();
@@ -48,13 +48,25 @@ private:
     struct AVFormatContext* input_ctx_ = nullptr;
     struct AVFormatContext* output_ctx_ = nullptr;
     int video_stream_index_ = -1;
-    std::atomic<std::uint64_t> video_frame_count_{0};
-    std::atomic<std::uint64_t> audio_frame_count_{0};
     int audio_stream_index_ = -1;
     asio::steady_timer stats_timer_;
     std::chrono::seconds stats_period_;
+
+    // Counters updated by relay thread (atomics for cross-thread stats reads).
     std::atomic<std::int64_t> last_video_pts_{AV_NOPTS_VALUE};
     std::atomic<std::int64_t> last_audio_pts_{AV_NOPTS_VALUE};
+    std::atomic<std::uint64_t> video_frame_count_{0};
+    std::atomic<std::uint64_t> video_key_count_{0};
+    std::atomic<std::uint64_t> video_bytes_{0};
+    std::atomic<std::uint64_t> audio_frame_count_{0};
+    std::atomic<std::uint64_t> audio_bytes_{0};
+
+    // Snapshot values from previous print_stats() call (timer thread only).
+    uint64_t prev_video_frames_{0};
+    uint64_t prev_video_keys_{0};
+    uint64_t prev_video_bytes_{0};
+    uint64_t prev_audio_frames_{0};
+    uint64_t prev_audio_bytes_{0};
     bool waiting_for_video_keyframe_ = false;
     std::chrono::steady_clock::time_point next_output_retry_at_ = std::chrono::steady_clock::time_point::min();
     bool need_video_dts_offset_ = false;
