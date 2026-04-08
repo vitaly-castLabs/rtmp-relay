@@ -15,7 +15,7 @@ struct RelayConfig {
 
 class RtmpRelay {
 public:
-    explicit RtmpRelay(RelayConfig config);
+    explicit RtmpRelay(const RelayConfig& config): config_(config) {}
 
     [[nodiscard]] int run();
     void request_stop();
@@ -32,7 +32,7 @@ private:
     void log_stream_map() const;
 
     RelayConfig config_;
-    std::atomic<bool> stop_requested_ {false};
+    std::atomic<bool> stop_requested_{false};
     struct AVFormatContext* input_ctx_ = nullptr;
     struct AVFormatContext* output_ctx_ = nullptr;
     int video_stream_index_ = -1;
@@ -43,7 +43,7 @@ private:
 
 class RelayApp {
 public:
-    explicit RelayApp(RelayConfig config);
+    explicit RelayApp(const RelayConfig& config): signals_(io_context_, SIGINT, SIGTERM), relay_(config) {}
 
     [[nodiscard]] int run();
 

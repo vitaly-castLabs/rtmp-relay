@@ -35,7 +35,7 @@ void print_usage(const char* exe_name) {
               << "  output: rtmp://127.0.0.1:19351/live/out\n";
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     try {

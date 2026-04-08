@@ -40,9 +40,7 @@ int stop_aware_interrupt(void* opaque) {
     return relay != nullptr && relay->stop_requested() ? 1 : 0;
 }
 
-}  // namespace
-
-RtmpRelay::RtmpRelay(RelayConfig config) : config_(std::move(config)) {}
+} // namespace
 
 int RtmpRelay::run() {
     const int network_init = avformat_network_init();
@@ -76,7 +74,7 @@ int RtmpRelay::relay_loop() {
     if (!open_output())
         LOG << "Output is not available yet; relay will keep ingesting and retry";
 
-    AVPacket packet {};
+    AVPacket packet{};
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
         const int read_rc = av_read_frame(input_ctx_, &packet);
@@ -108,11 +106,8 @@ int RtmpRelay::relay_loop() {
 
         if (packet.stream_index == video_stream_index_) {
             ++video_frame_count_;
-            LOG << "video frame #" << video_frame_count_
-                << " size=" << packet.size
-                << " pts=" << format_ts(packet.pts, input_stream->time_base)
-                << " dts=" << format_ts(packet.dts, input_stream->time_base)
-                << " duration=" << format_ts(packet.duration, input_stream->time_base)
+            LOG << "video frame #" << video_frame_count_ << " size=" << packet.size << " pts=" << format_ts(packet.pts, input_stream->time_base)
+                << " dts=" << format_ts(packet.dts, input_stream->time_base) << " duration=" << format_ts(packet.duration, input_stream->time_base)
                 << " key=" << ((packet.flags & AV_PKT_FLAG_KEY) != 0 ? "yes" : "no");
         }
 
@@ -299,14 +294,10 @@ void RtmpRelay::log_stream_map() const {
         const AVStream* stream = input_ctx_->streams[i];
         const char* media_type = av_get_media_type_string(stream->codecpar->codec_type);
         const AVCodecDescriptor* codec = avcodec_descriptor_get(stream->codecpar->codec_id);
-        LOG << "stream #" << i
-            << " type=" << (media_type == nullptr ? "unknown" : media_type)
-            << " codec=" << (codec == nullptr ? "unknown" : codec->name)
+        LOG << "stream #" << i << " type=" << (media_type == nullptr ? "unknown" : media_type) << " codec=" << (codec == nullptr ? "unknown" : codec->name)
             << " time_base=" << stream->time_base.num << '/' << stream->time_base.den;
     }
 }
-
-RelayApp::RelayApp(RelayConfig config) : signals_(io_context_, SIGINT, SIGTERM), relay_(std::move(config)) {}
 
 int RelayApp::run() {
     install_sigpipe_handler();
@@ -316,9 +307,7 @@ int RelayApp::run() {
         asio::post(io_context_, [this] { io_context_.stop(); });
     });
 
-    signals_.async_wait([this](asio::error_code ec, int signal_number) {
-        handle_stop_signal(ec, signal_number);
-    });
+    signals_.async_wait([this](asio::error_code ec, int signal_number) { handle_stop_signal(ec, signal_number); });
 
     io_context_.run();
     relay_.request_stop();
@@ -345,7 +334,7 @@ void RelayApp::handle_stop_signal(asio::error_code ec, int signal_number) {
 }
 
 void RelayApp::install_sigpipe_handler() {
-    struct sigaction ignore_sa {};
+    struct sigaction ignore_sa{};
     ignore_sa.sa_handler = SIG_IGN;
     sigemptyset(&ignore_sa.sa_mask);
     ignore_sa.sa_flags = 0;
