@@ -167,11 +167,8 @@ bool RtmpRelay::open_input() {
     input_ctx_->interrupt_callback = {stop_aware_interrupt, this};
 
     AVDictionary* options = nullptr;
-    if (config_.listen_input) {
-        av_dict_set(&options, "listen", "1", 0);
-        LOG << "Listening for RTMP publisher on " << config_.input_url;
-    }
-
+    av_dict_set(&options, "listen", "1", 0);
+    LOG << "Listening for RTMP publisher on " << config_.input_url;
     int rc = avformat_open_input(&input_ctx_, config_.input_url.c_str(), nullptr, &options);
     av_dict_free(&options);
     if (rc < 0) {
@@ -198,11 +195,7 @@ bool RtmpRelay::open_input() {
         return false;
     }
 
-    if (config_.listen_input) {
-        LOG << "Accepted RTMP publisher on " << config_.input_url << " with " << input_ctx_->nb_streams << " stream(s)";
-    } else {
-        LOG << "Opened input " << config_.input_url << " with " << input_ctx_->nb_streams << " stream(s)";
-    }
+    LOG << "Accepted RTMP publisher on " << config_.input_url << " with " << input_ctx_->nb_streams << " stream(s)";
     return true;
 }
 

@@ -12,7 +12,13 @@ cmake --build build
 ## Usage
 
 ```bash
-./build/rtmp_relay --listen-input rtmp://0.0.0.0:19350/live/in rtmp://127.0.0.1:19351/live/out
+./build/rtmp_relay
+```
+
+Override default URLs with positional arguments:
+
+```bash
+./build/rtmp_relay rtmp://0.0.0.0:19350/live/in rtmp://127.0.0.1:19351/live/out
 ```
 
 Fire up the player:
@@ -45,4 +51,13 @@ Run it with the default input/output URLs and expose the input port:
 docker run --rm -it \
   --network host \
   rtmp-relay:ubuntu24.04
+```
+
+Or override the URLs:
+
+```bash
+docker run --rm -it \
+  --network host \
+  rtmp-relay:ubuntu24.04 \
+  rtmp://0.0.0.0:19350/live/in rtmp://127.0.0.1:19351/live/out
 ```
