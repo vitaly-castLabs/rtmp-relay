@@ -18,6 +18,42 @@ struct RelayConfig {
     std::string output_url = "rtmp://127.0.0.1:19351/live/out";
 };
 
+struct StreamSnapshot {
+    uint64_t frames = 0;
+    uint64_t key_frames = 0;
+    uint64_t bytes = 0;
+
+    StreamSnapshot operator-(const StreamSnapshot& rhs) const {
+        return {frames - rhs.frames, key_frames - rhs.key_frames, bytes - rhs.bytes};
+    }
+};
+
+struct StreamCounters {
+    std::atomic<uint64_t> frames{0};
+    std::atomic<uint64_t> key_frames{0};
+    std::atomic<uint64_t> bytes{0};
+    std::atomic<int64_t> last_pts{AV_NOPTS_VALUE};
+
+    void reset() {
+        frames.store(0, std::memory_order_relaxed);
+        key_frames.store(0, std::memory_order_relaxed);
+        bytes.store(0, std::memory_order_relaxed);
+        last_pts.store(AV_NOPTS_VALUE, std::memory_order_relaxed);
+    }
+
+    void record(int size, bool keyframe) {
+        frames.fetch_add(1, std::memory_order_relaxed);
+        if (keyframe)
+            key_frames.fetch_add(1, std::memory_order_relaxed);
+        bytes.fetch_add(size, std::memory_order_relaxed);
+    }
+
+    StreamSnapshot snapshot() const {
+        return {frames.load(std::memory_order_relaxed), key_frames.load(std::memory_order_relaxed),
+                bytes.load(std::memory_order_relaxed)};
+    }
+};
+
 class RtmpRelay {
 public:
     explicit RtmpRelay(const RelayConfig& config, asio::io_context& io_context, std::chrono::seconds stats_period = std::chrono::seconds(10))
@@ -52,21 +88,10 @@ private:
     asio::steady_timer stats_timer_;
     std::chrono::seconds stats_period_;
 
-    // Counters updated by relay thread (atomics for cross-thread stats reads).
-    std::atomic<std::int64_t> last_video_pts_{AV_NOPTS_VALUE};
-    std::atomic<std::int64_t> last_audio_pts_{AV_NOPTS_VALUE};
-    std::atomic<std::uint64_t> video_frame_count_{0};
-    std::atomic<std::uint64_t> video_key_count_{0};
-    std::atomic<std::uint64_t> video_bytes_{0};
-    std::atomic<std::uint64_t> audio_frame_count_{0};
-    std::atomic<std::uint64_t> audio_bytes_{0};
-
-    // Snapshot values from previous print_stats() call (timer thread only).
-    uint64_t prev_video_frames_{0};
-    uint64_t prev_video_keys_{0};
-    uint64_t prev_video_bytes_{0};
-    uint64_t prev_audio_frames_{0};
-    uint64_t prev_audio_bytes_{0};
+    StreamCounters video_counters_;
+    StreamCounters audio_counters_;
+    StreamSnapshot prev_video_;
+    StreamSnapshot prev_audio_;
     bool waiting_for_video_keyframe_ = false;
     std::chrono::steady_clock::time_point next_output_retry_at_ = std::chrono::steady_clock::time_point::min();
     bool need_video_dts_offset_ = false;

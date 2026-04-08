@@ -47,6 +47,15 @@ uint64_t bitrate_kbps(uint64_t bytes, double seconds) {
     return static_cast<uint64_t>(static_cast<double>(bytes) * 8.0 / 1000.0 / seconds + 0.5);
 }
 
+void log_stream_stats(const std::string& label, const StreamSnapshot& snap, double seconds, bool show_keyframes) {
+    std::ostringstream oss;
+    oss << '[' << label << "] frames: " << snap.frames;
+    if (show_keyframes)
+        oss << " (" << snap.key_frames << " key)";
+    oss << ", bitrate: " << bitrate_kbps(snap.bytes, seconds) << " kbps";
+    LOG << oss.str();
+}
+
 int stop_aware_interrupt(void* opaque) {
     const auto* relay = static_cast<const RtmpRelay*>(opaque);
     return relay != nullptr && relay->stop_requested() ? 1 : 0;
@@ -115,7 +124,7 @@ void RtmpRelay::relay_packets() {
             return;
         }
         if (read_rc == AVERROR(EIO) &&
-            (video_frame_count_.load(std::memory_order_relaxed) > 0 || audio_frame_count_.load(std::memory_order_relaxed) > 0)) {
+            (video_counters_.frames.load(std::memory_order_relaxed) > 0 || audio_counters_.frames.load(std::memory_order_relaxed) > 0)) {
             LOG << "Input stream closed by peer";
             return;
         }
@@ -132,15 +141,11 @@ void RtmpRelay::relay_packets() {
         AVStream* input_stream = input_ctx_->streams[packet.stream_index];
 
         if (packet.stream_index == video_stream_index_) {
-            video_frame_count_.fetch_add(1, std::memory_order_relaxed);
-            if ((packet.flags & AV_PKT_FLAG_KEY) != 0)
-                video_key_count_.fetch_add(1, std::memory_order_relaxed);
-            video_bytes_.fetch_add(packet.size, std::memory_order_relaxed);
-            last_video_pts_.store(packet.pts, std::memory_order_relaxed);
+            video_counters_.record(packet.size, (packet.flags & AV_PKT_FLAG_KEY) != 0);
+            video_counters_.last_pts.store(packet.pts, std::memory_order_relaxed);
         } else if (packet.stream_index == audio_stream_index_) {
-            audio_frame_count_.fetch_add(1, std::memory_order_relaxed);
-            audio_bytes_.fetch_add(packet.size, std::memory_order_relaxed);
-            last_audio_pts_.store(packet.pts, std::memory_order_relaxed);
+            audio_counters_.record(packet.size, false);
+            audio_counters_.last_pts.store(packet.pts, std::memory_order_relaxed);
         }
 
         if (!ensure_output()) {
@@ -157,7 +162,7 @@ void RtmpRelay::relay_packets() {
             }
 
             waiting_for_video_keyframe_ = false;
-            LOG << "Resumed output on video keyframe #" << video_frame_count_.load(std::memory_order_relaxed);
+            LOG << "Resumed output on video keyframe #" << video_counters_.frames.load(std::memory_order_relaxed);
         }
 
         AVStream* output_stream = output_ctx_->streams[packet.stream_index];
@@ -352,18 +357,10 @@ void RtmpRelay::close_input() {
 void RtmpRelay::reset_input_state() {
     video_stream_index_ = -1;
     audio_stream_index_ = -1;
-    video_frame_count_.store(0, std::memory_order_relaxed);
-    video_key_count_.store(0, std::memory_order_relaxed);
-    video_bytes_.store(0, std::memory_order_relaxed);
-    audio_frame_count_.store(0, std::memory_order_relaxed);
-    audio_bytes_.store(0, std::memory_order_relaxed);
-    last_video_pts_.store(AV_NOPTS_VALUE, std::memory_order_relaxed);
-    last_audio_pts_.store(AV_NOPTS_VALUE, std::memory_order_relaxed);
-    prev_video_frames_ = 0;
-    prev_video_keys_ = 0;
-    prev_video_bytes_ = 0;
-    prev_audio_frames_ = 0;
-    prev_audio_bytes_ = 0;
+    video_counters_.reset();
+    audio_counters_.reset();
+    prev_video_ = {};
+    prev_audio_ = {};
     waiting_for_video_keyframe_ = true;
     need_video_dts_offset_ = (last_written_video_dts_ != AV_NOPTS_VALUE);
     need_audio_dts_offset_ = (last_written_audio_dts_ != AV_NOPTS_VALUE);
@@ -405,58 +402,41 @@ void RtmpRelay::print_stats() {
         return;
 
     const double period = static_cast<double>(stats_period_.count());
+    const std::string period_label = std::to_string(stats_period_.count()) + "s";
+    const int64_t v_pts = have_video ? video_counters_.last_pts.load(std::memory_order_relaxed) : AV_NOPTS_VALUE;
+    const int64_t a_pts = have_audio ? audio_counters_.last_pts.load(std::memory_order_relaxed) : AV_NOPTS_VALUE;
+    const double v_sec = (v_pts != AV_NOPTS_VALUE) ? pts_to_seconds(v_pts, input_ctx_->streams[video_stream_index_]->time_base) : 0;
+    const double a_sec = (a_pts != AV_NOPTS_VALUE) ? pts_to_seconds(a_pts, input_ctx_->streams[audio_stream_index_]->time_base) : 0;
 
     // --- PTS line ---
-    const int64_t v_pts = last_video_pts_.load(std::memory_order_relaxed);
-    const int64_t a_pts = last_audio_pts_.load(std::memory_order_relaxed);
-
-    std::ostringstream pts_line;
-    pts_line << "[pts]";
-    double v_sec = 0, a_sec = 0;
-    if (have_audio && a_pts != AV_NOPTS_VALUE) {
-        a_sec = pts_to_seconds(a_pts, input_ctx_->streams[audio_stream_index_]->time_base);
-        pts_line << " audio: " << format_hms(a_sec);
+    {
+        std::ostringstream oss;
+        oss << "[pts]";
+        if (a_pts != AV_NOPTS_VALUE) oss << " audio: " << format_hms(a_sec);
+        if (v_pts != AV_NOPTS_VALUE) oss << (a_pts != AV_NOPTS_VALUE ? ", " : " ") << "video: " << format_hms(v_sec);
+        if (a_pts != AV_NOPTS_VALUE && v_pts != AV_NOPTS_VALUE) {
+            const double diff = a_sec - v_sec;
+            oss << ", diff: " << (diff >= 0 ? "+" : "") << std::fixed << std::setprecision(3) << diff;
+        }
+        LOG << oss.str();
     }
-    if (have_video && v_pts != AV_NOPTS_VALUE) {
-        v_sec = pts_to_seconds(v_pts, input_ctx_->streams[video_stream_index_]->time_base);
-        pts_line << (have_audio && a_pts != AV_NOPTS_VALUE ? ", " : " ") << "video: " << format_hms(v_sec);
-    }
-    if (have_audio && a_pts != AV_NOPTS_VALUE && have_video && v_pts != AV_NOPTS_VALUE) {
-        const double diff = a_sec - v_sec;
-        pts_line << ", diff: " << (diff >= 0 ? "+" : "") << std::fixed << std::setprecision(3) << diff;
-    }
-    LOG << pts_line.str();
 
     // --- video ---
     if (have_video) {
-        const uint64_t vf = video_frame_count_.load(std::memory_order_relaxed);
-        const uint64_t vk = video_key_count_.load(std::memory_order_relaxed);
-        const uint64_t vb = video_bytes_.load(std::memory_order_relaxed);
-
-        LOG << "[v:" << stats_period_.count() << "s] frames: " << (vf - prev_video_frames_) << " (" << (vk - prev_video_keys_) << " key)"
-            << ", bitrate: " << bitrate_kbps(vb - prev_video_bytes_, period) << " kbps";
-
-        if (v_pts != AV_NOPTS_VALUE && v_sec > 0)
-            LOG << "[v:all] frames: " << vf << " (" << vk << " key), bitrate: " << bitrate_kbps(vb, v_sec) << " kbps";
-
-        prev_video_frames_ = vf;
-        prev_video_keys_ = vk;
-        prev_video_bytes_ = vb;
+        const auto snap = video_counters_.snapshot();
+        log_stream_stats("v:" + period_label, snap - prev_video_, period, true);
+        if (v_sec > 0)
+            log_stream_stats("v:all", snap, v_sec, true);
+        prev_video_ = snap;
     }
 
     // --- audio ---
     if (have_audio) {
-        const uint64_t af = audio_frame_count_.load(std::memory_order_relaxed);
-        const uint64_t ab = audio_bytes_.load(std::memory_order_relaxed);
-
-        LOG << "[a:" << stats_period_.count() << "s] frames: " << (af - prev_audio_frames_)
-            << ", bitrate: " << bitrate_kbps(ab - prev_audio_bytes_, period) << " kbps";
-
-        if (a_pts != AV_NOPTS_VALUE && a_sec > 0)
-            LOG << "[a:all] frames: " << af << ", bitrate: " << bitrate_kbps(ab, a_sec) << " kbps";
-
-        prev_audio_frames_ = af;
-        prev_audio_bytes_ = ab;
+        const auto snap = audio_counters_.snapshot();
+        log_stream_stats("a:" + period_label, snap - prev_audio_, period, false);
+        if (a_sec > 0)
+            log_stream_stats("a:all", snap, a_sec, false);
+        prev_audio_ = snap;
     }
 }
 
