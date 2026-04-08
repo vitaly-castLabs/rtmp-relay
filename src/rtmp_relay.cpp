@@ -71,6 +71,8 @@ int RtmpRelay::relay_loop() {
     LOG << "Relay started: " << config_.input_url << " -> " << config_.output_url;
     log_stream_map();
 
+    start_stats_timer([this] { print_stats(); });
+
     if (!open_output())
         LOG << "Output is not available yet; relay will keep ingesting and retry";
 
@@ -328,8 +330,6 @@ void RtmpRelay::print_stats() const {
 
 int RelayApp::run() {
     install_sigpipe_handler();
-
-    relay_.start_stats_timer([this] { print_stats(); });
 
     relay_thread_ = std::thread([this] {
         exit_code_ = relay_.run();
