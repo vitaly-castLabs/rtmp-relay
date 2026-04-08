@@ -65,43 +65,55 @@ bool RtmpRelay::stop_requested() const {
 }
 
 int RtmpRelay::relay_loop() {
-    if (!open_input())
-        return 1;
-
     LOG << "Relay started: " << config_.input_url << " -> " << config_.output_url;
-    log_stream_map();
-
     start_stats_timer([this] { print_stats(); });
 
-    if (!open_output())
-        LOG << "Output is not available yet; relay will keep ingesting and retry";
+    while (!stop_requested_.load(std::memory_order_relaxed)) {
+        if (!open_input()) {
+            if (stop_requested_.load(std::memory_order_relaxed))
+                break;
+            return 1;
+        }
 
+        log_stream_map();
+
+        if (output_ctx_ == nullptr && !open_output())
+            LOG << "Output is not available yet; relay will keep ingesting and retry";
+
+        relay_packets();
+
+        LOG << "Input disconnected, waiting for new publisher";
+        close_input();
+        reset_input_state();
+    }
+
+    LOG << "Stop requested";
+    if (output_ctx_ != nullptr)
+        av_write_trailer(output_ctx_);
+    return 0;
+}
+
+void RtmpRelay::relay_packets() {
     AVPacket packet{};
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
         const int read_rc = av_read_frame(input_ctx_, &packet);
         if (read_rc == AVERROR_EOF) {
-            LOG << "Input stream ended";
-            if (output_ctx_ != nullptr)
-                av_write_trailer(output_ctx_);
-            return 0;
+            LOG << "Input stream ended (EOF)";
+            return;
         }
         if (read_rc == AVERROR(EIO) && video_frame_count_.load(std::memory_order_relaxed) > 0) {
             LOG << "Input stream closed by peer";
-            if (output_ctx_ != nullptr)
-                av_write_trailer(output_ctx_);
-            return 0;
+            return;
         }
         if (read_rc < 0) {
             if (stop_requested_.load(std::memory_order_relaxed) && read_rc == AVERROR_EXIT) {
                 LOG << "Relay stopped while waiting for input";
-                if (output_ctx_ != nullptr)
-                    av_write_trailer(output_ctx_);
-                return 0;
+                return;
             }
 
             LOG << "av_read_frame() failed: " << av_error_string(read_rc);
-            return 1;
+            return;
         }
 
         AVStream* input_stream = input_ctx_->streams[packet.stream_index];
@@ -135,24 +147,51 @@ int RtmpRelay::relay_loop() {
         av_packet_rescale_ts(&packet, input_stream->time_base, output_stream->time_base);
         packet.pos = -1;
 
+        // On reconnect a new publisher starts its timestamps from 0, which would
+        // make the output muxer see backwards DTS and drop/corrupt packets.
+        // Compute a per-stream offset so timestamps continue monotonically.
+        if (packet.stream_index == video_stream_index_) {
+            if (need_video_dts_offset_ && packet.dts != AV_NOPTS_VALUE) {
+                video_dts_offset_ = last_written_video_dts_ + 1 - packet.dts;
+                need_video_dts_offset_ = false;
+                LOG << "Applying video DTS offset: " << video_dts_offset_;
+            }
+            if (packet.pts != AV_NOPTS_VALUE) packet.pts += video_dts_offset_;
+            if (packet.dts != AV_NOPTS_VALUE) packet.dts += video_dts_offset_;
+        } else if (packet.stream_index == audio_stream_index_) {
+            if (need_audio_dts_offset_ && packet.dts != AV_NOPTS_VALUE) {
+                audio_dts_offset_ = last_written_audio_dts_ + 1 - packet.dts;
+                need_audio_dts_offset_ = false;
+                LOG << "Applying audio DTS offset: " << audio_dts_offset_;
+            }
+            if (packet.pts != AV_NOPTS_VALUE) packet.pts += audio_dts_offset_;
+            if (packet.dts != AV_NOPTS_VALUE) packet.dts += audio_dts_offset_;
+        }
+
+        // Save before av_interleaved_write_frame: it calls av_packet_move_ref
+        // internally, which zeroes out packet fields (including dts) before return.
+        const int pkt_stream = packet.stream_index;
+        const int64_t pkt_dts = packet.dts;
+
         const int write_rc = av_interleaved_write_frame(output_ctx_, &packet);
+
+        if (write_rc == 0) {
+            if (pkt_stream == video_stream_index_ && pkt_dts != AV_NOPTS_VALUE)
+                last_written_video_dts_ = pkt_dts;
+            else if (pkt_stream == audio_stream_index_ && pkt_dts != AV_NOPTS_VALUE)
+                last_written_audio_dts_ = pkt_dts;
+        }
+
         av_packet_unref(&packet);
         if (write_rc < 0) {
             if (stop_requested_.load(std::memory_order_relaxed) && write_rc == AVERROR_EXIT) {
                 LOG << "Relay stopped while writing output";
-                if (output_ctx_ != nullptr)
-                    av_write_trailer(output_ctx_);
-                return 0;
+                return;
             }
 
             handle_output_disconnect(av_error_string(write_rc));
         }
     }
-
-    LOG << "Stop requested";
-    if (output_ctx_ != nullptr)
-        av_write_trailer(output_ctx_);
-    return 0;
 }
 
 bool RtmpRelay::open_input() {
@@ -293,6 +332,20 @@ void RtmpRelay::close_input() {
     input_ctx_ = nullptr;
 }
 
+void RtmpRelay::reset_input_state() {
+    video_stream_index_ = -1;
+    audio_stream_index_ = -1;
+    video_frame_count_.store(0, std::memory_order_relaxed);
+    audio_frame_count_.store(0, std::memory_order_relaxed);
+    last_video_pts_.store(AV_NOPTS_VALUE, std::memory_order_relaxed);
+    last_audio_pts_.store(AV_NOPTS_VALUE, std::memory_order_relaxed);
+    waiting_for_video_keyframe_ = true;
+    need_video_dts_offset_ = (last_written_video_dts_ != AV_NOPTS_VALUE);
+    need_audio_dts_offset_ = (last_written_audio_dts_ != AV_NOPTS_VALUE);
+    video_dts_offset_ = 0;
+    audio_dts_offset_ = 0;
+}
+
 void RtmpRelay::log_stream_map() const {
     for (unsigned int i = 0; i < input_ctx_->nb_streams; ++i) {
         const AVStream* stream = input_ctx_->streams[i];
@@ -318,6 +371,9 @@ void RtmpRelay::cancel_stats_timer() {
 }
 
 void RtmpRelay::print_stats() const {
+    if (input_ctx_ == nullptr || video_stream_index_ < 0)
+        return;
+
     const AVStream* video_stream = input_ctx_->streams[video_stream_index_];
     const int64_t video_pts = last_video_pts_.load(std::memory_order_relaxed);
     const int64_t audio_pts = last_audio_pts_.load(std::memory_order_relaxed);

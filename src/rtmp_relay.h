@@ -33,12 +33,14 @@ public:
 
 private:
     int relay_loop();
+    void relay_packets();
     bool open_input();
     bool open_output();
     bool ensure_output();
     void handle_output_disconnect(const std::string& error_text);
     void close_output();
     void close_input();
+    void reset_input_state();
     void log_stream_map() const;
 
     RelayConfig config_;
@@ -55,6 +57,12 @@ private:
     std::atomic<std::int64_t> last_audio_pts_{AV_NOPTS_VALUE};
     bool waiting_for_video_keyframe_ = false;
     std::chrono::steady_clock::time_point next_output_retry_at_ = std::chrono::steady_clock::time_point::min();
+    bool need_video_dts_offset_ = false;
+    bool need_audio_dts_offset_ = false;
+    int64_t video_dts_offset_ = 0;
+    int64_t audio_dts_offset_ = 0;
+    int64_t last_written_video_dts_ = AV_NOPTS_VALUE;
+    int64_t last_written_audio_dts_ = AV_NOPTS_VALUE;
 };
 
 class RelayApp {

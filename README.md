@@ -34,8 +34,10 @@ ffmpeg -re -stream_loop -1 -i sample.mp4 -c copy -f flv rtmp://127.0.0.1:19350/l
 
 or (generate synthetic A/V on-the-fly):
 ```bash
-ffmpeg -lavfi "testsrc=640x480;sine=10:40" -f flv rtmp://127.0.0.1:19350/live/in
+ffmpeg -lavfi "testsrc=640x480,realtime;sine=10:40,arealtime" -f flv rtmp://127.0.0.1:19350/live/in
 ```
+
+> `realtime`/`arealtime` are the `-lavfi` equivalent of `-re`, throttling synthetic sources to wall-clock speed.
 
 ## Docker
 
