@@ -14,8 +14,8 @@ extern "C" {
 #include <thread>
 
 struct RelayConfig {
-    std::string input_url = "rtmp://0.0.0.0:19350/live/in";
-    std::string output_url = "rtmp://127.0.0.1:19351/live/out";
+    std::string input_url;
+    std::string output_url;
 };
 
 struct StreamSnapshot {

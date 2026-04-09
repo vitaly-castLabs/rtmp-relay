@@ -20,6 +20,16 @@ namespace {
 
 constexpr auto kOutputRetryDelay = std::chrono::seconds(1);
 
+// FFmpeg's RTMP listen mode logs "Unexpected stream" on playpath mismatch
+// but does not reject the connection. We intercept this to enforce rejection.
+std::atomic<bool> g_stream_rejected{false};
+
+void av_log_relay_callback(void* ptr, int level, const char* fmt, va_list vl) {
+    if (fmt  && strstr(fmt, "Unexpected stream") )
+        g_stream_rejected.store(true, std::memory_order_relaxed);
+    av_log_default_callback(ptr, level, fmt, vl);
+}
+
 std::string av_error_string(int errnum) {
     char buffer[AV_ERROR_MAX_STRING_SIZE] = {};
     av_strerror(errnum, buffer, sizeof(buffer));
@@ -58,12 +68,14 @@ void log_stream_stats(const std::string& label, const StreamSnapshot& snap, doub
 
 int stop_aware_interrupt(void* opaque) {
     const auto* relay = static_cast<const RtmpRelay*>(opaque);
-    return relay != nullptr && relay->stop_requested() ? 1 : 0;
+    return relay  && relay->stop_requested() ? 1 : 0;
 }
 
 } // namespace
 
 int RtmpRelay::run() {
+    av_log_set_callback(av_log_relay_callback);
+
     const int network_init = avformat_network_init();
     if (network_init < 0) {
         LOG << "avformat_network_init() failed: " << av_error_string(network_init);
@@ -98,7 +110,7 @@ int RtmpRelay::relay_loop() {
 
         log_stream_map();
 
-        if (output_ctx_ == nullptr && !open_output())
+        if (!output_ctx_ && !open_output())
             LOG << "Output is not available yet; relay will keep ingesting and retry";
 
         relay_packets();
@@ -109,7 +121,7 @@ int RtmpRelay::relay_loop() {
     }
 
     LOG << "Stop requested";
-    if (output_ctx_ != nullptr)
+    if (output_ctx_ )
         av_write_trailer(output_ctx_);
     return 0;
 }
@@ -221,7 +233,7 @@ bool RtmpRelay::open_input() {
 
     while (!stop_requested()) {
         input_ctx_ = avformat_alloc_context();
-        if (input_ctx_ == nullptr) {
+        if (!input_ctx_) {
             LOG << "avformat_alloc_context() failed for input";
             return false;
         }
@@ -231,8 +243,16 @@ bool RtmpRelay::open_input() {
         AVDictionary* options = nullptr;
         av_dict_set(&options, "listen", "1", 0);
         av_dict_set(&options, "listen_timeout", "1000", 0);
+        g_stream_rejected.store(false, std::memory_order_relaxed);
         int rc = avformat_open_input(&input_ctx_, config_.input_url.c_str(), nullptr, &options);
         av_dict_free(&options);
+
+        if (rc == 0 && g_stream_rejected.load(std::memory_order_relaxed)) {
+            LOG << "Rejected publisher: stream name mismatch";
+            avformat_close_input(&input_ctx_);
+            input_ctx_ = nullptr;
+            continue;
+        }
 
         if (rc == 0)
             break;
@@ -278,7 +298,7 @@ bool RtmpRelay::open_input() {
 
 bool RtmpRelay::open_output() {
     int rc = avformat_alloc_output_context2(&output_ctx_, nullptr, "flv", config_.output_url.c_str());
-    if (rc < 0 || output_ctx_ == nullptr) {
+    if (rc < 0 || !output_ctx_) {
         LOG << "avformat_alloc_output_context2(" << config_.output_url << ") failed: " << av_error_string(rc);
         return false;
     }
@@ -288,7 +308,7 @@ bool RtmpRelay::open_output() {
     for (unsigned int i = 0; i < input_ctx_->nb_streams; ++i) {
         const AVStream* input_stream = input_ctx_->streams[i];
         AVStream* output_stream = avformat_new_stream(output_ctx_, nullptr);
-        if (output_stream == nullptr) {
+        if (!output_stream) {
             LOG << "avformat_new_stream() failed for stream " << i;
             close_output();
             return false;
@@ -332,7 +352,7 @@ bool RtmpRelay::open_output() {
 }
 
 bool RtmpRelay::ensure_output() {
-    if (output_ctx_ != nullptr)
+    if (output_ctx_ )
         return true;
 
     const auto now = std::chrono::steady_clock::now();
@@ -354,10 +374,10 @@ void RtmpRelay::handle_output_disconnect(const std::string& error_text) {
 }
 
 void RtmpRelay::close_output() {
-    if (output_ctx_ == nullptr)
+    if (!output_ctx_)
         return;
 
-    if ((output_ctx_->oformat->flags & AVFMT_NOFILE) == 0 && output_ctx_->pb != nullptr)
+    if ((output_ctx_->oformat->flags & AVFMT_NOFILE) == 0 && output_ctx_->pb)
         avio_closep(&output_ctx_->pb);
 
     avformat_free_context(output_ctx_);
@@ -365,7 +385,7 @@ void RtmpRelay::close_output() {
 }
 
 void RtmpRelay::close_input() {
-    if (input_ctx_ == nullptr)
+    if (!input_ctx_)
         return;
 
     avformat_close_input(&input_ctx_);
@@ -393,7 +413,7 @@ void RtmpRelay::log_stream_map() const {
         const AVStream* stream = input_ctx_->streams[i];
         const char* media_type = av_get_media_type_string(stream->codecpar->codec_type);
         const AVCodecDescriptor* codec = avcodec_descriptor_get(stream->codecpar->codec_id);
-        LOG << "stream #" << i << " type=" << (media_type == nullptr ? "unknown" : media_type) << " codec=" << (codec == nullptr ? "unknown" : codec->name)
+        LOG << "stream #" << i << " type=" << (media_type ? media_type : "unknown") << " codec=" << (codec ? codec->name : "unknown")
             << " time_base=" << stream->time_base.num << '/' << stream->time_base.den;
     }
 }

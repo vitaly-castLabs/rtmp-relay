@@ -5,6 +5,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -15,6 +16,7 @@ struct AppConfig {
 
 AppConfig parse_config(int argc, char** argv) {
     AppConfig app_config;
+    std::vector<std::string> positional;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -28,15 +30,15 @@ AppConfig parse_config(int argc, char** argv) {
         } else if (!arg.empty() && arg.front() == '-') {
             throw std::invalid_argument("unknown option: " + arg);
         } else {
-            if (app_config.relay.input_url.empty()) {
-                app_config.relay.input_url = arg;
-            } else if (app_config.relay.output_url.empty()) {
-                app_config.relay.output_url = arg;
-            } else {
-                throw std::invalid_argument("expected at most two RTMP URLs");
-            }
+            positional.push_back(arg);
         }
     }
+
+    if (positional.size() > 2)
+        throw std::invalid_argument("expected at most two RTMP URLs");
+
+    app_config.relay.input_url = positional.size() > 0 ? positional[0] : "rtmp://0.0.0.0:19350/live/in";
+    app_config.relay.output_url = positional.size() > 1 ? positional[1] : "rtmp://127.0.0.1:19351/live/out";
 
     return app_config;
 }
