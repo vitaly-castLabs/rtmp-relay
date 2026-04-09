@@ -245,8 +245,10 @@ bool RtmpRelay::open_input() {
         const AVStream* stream = input_ctx_->streams[i];
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && video_stream_index_ < 0) {
             video_stream_index_ = static_cast<int>(i);
+            video_time_base_ = stream->time_base;
         } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && audio_stream_index_ < 0) {
             audio_stream_index_ = static_cast<int>(i);
+            audio_time_base_ = stream->time_base;
         }
     }
 
@@ -357,6 +359,8 @@ void RtmpRelay::close_input() {
 void RtmpRelay::reset_input_state() {
     video_stream_index_ = -1;
     audio_stream_index_ = -1;
+    video_time_base_ = {};
+    audio_time_base_ = {};
     video_counters_.reset();
     audio_counters_.reset();
     prev_video_ = {};
@@ -393,9 +397,6 @@ void RtmpRelay::cancel_stats_timer() {
 }
 
 void RtmpRelay::print_stats() {
-    if (input_ctx_ == nullptr)
-        return;
-
     const bool have_video = video_stream_index_ >= 0;
     const bool have_audio = audio_stream_index_ >= 0;
     if (!have_video && !have_audio)
@@ -405,8 +406,8 @@ void RtmpRelay::print_stats() {
     const std::string period_label = std::to_string(stats_period_.count()) + "s";
     const int64_t v_pts = have_video ? video_counters_.last_pts.load(std::memory_order_relaxed) : AV_NOPTS_VALUE;
     const int64_t a_pts = have_audio ? audio_counters_.last_pts.load(std::memory_order_relaxed) : AV_NOPTS_VALUE;
-    const double v_sec = (v_pts != AV_NOPTS_VALUE) ? pts_to_seconds(v_pts, input_ctx_->streams[video_stream_index_]->time_base) : 0;
-    const double a_sec = (a_pts != AV_NOPTS_VALUE) ? pts_to_seconds(a_pts, input_ctx_->streams[audio_stream_index_]->time_base) : 0;
+    const double v_sec = (v_pts != AV_NOPTS_VALUE) ? pts_to_seconds(v_pts, video_time_base_) : 0;
+    const double a_sec = (a_pts != AV_NOPTS_VALUE) ? pts_to_seconds(a_pts, audio_time_base_) : 0;
 
     // --- PTS line ---
     {

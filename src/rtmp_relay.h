@@ -90,6 +90,8 @@ private:
 
     StreamCounters video_counters_;
     StreamCounters audio_counters_;
+    AVRational video_time_base_{};
+    AVRational audio_time_base_{};
     StreamSnapshot prev_video_;
     StreamSnapshot prev_audio_;
     bool waiting_for_video_keyframe_ = false;
