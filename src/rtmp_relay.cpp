@@ -328,7 +328,6 @@ bool RtmpRelay::open_output() {
     if ((output_ctx_->oformat->flags & AVFMT_NOFILE) == 0) {
         AVDictionary* options = nullptr;
         av_dict_set(&options, "tcp_nodelay", "1", 0);
-        av_dict_set(&options, "timeout", "2000000", 0);
         rc = avio_open2(&output_ctx_->pb, config_.output_url.c_str(), AVIO_FLAG_WRITE, &output_ctx_->interrupt_callback, &options);
         av_dict_free(&options);
         if (rc < 0) {
