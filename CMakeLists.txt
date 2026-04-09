@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.14)
 
+set(CMAKE_C_COMPILER_NAMES clang gcc icc cc)
 set(CMAKE_CXX_COMPILER_NAMES clang++ g++ icpc c++ cxx)
-project(rtmp_relay VERSION 1.0.0 LANGUAGES CXX)
+project(rtmp_relay VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -46,6 +47,7 @@ target_link_libraries(asio INTERFACE Threads::Threads)
 add_executable(rtmp_relay
     src/main.cpp
     src/rtmp_relay.cpp
+    src/transformer.cpp
 )
 
 target_include_directories(rtmp_relay PRIVATE src)
@@ -58,4 +60,9 @@ target_link_libraries(
         PkgConfig::LIBAVFORMAT
         PkgConfig::LIBAVCODEC
         PkgConfig::LIBAVUTIL
+        ${CMAKE_DL_LIBS}
 )
+
+add_library(sample_transformer SHARED samples/sample_transformer.c)
+target_include_directories(sample_transformer PRIVATE include)
+set_target_properties(sample_transformer PROPERTIES PREFIX "" OUTPUT_NAME "sample_transformer")

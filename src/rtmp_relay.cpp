@@ -25,7 +25,7 @@ constexpr auto kOutputRetryDelay = std::chrono::seconds(1);
 std::atomic<bool> g_stream_rejected{false};
 
 void av_log_relay_callback(void* ptr, int level, const char* fmt, va_list vl) {
-    if (fmt  && strstr(fmt, "Unexpected stream") )
+    if (fmt && strstr(fmt, "Unexpected stream"))
         g_stream_rejected.store(true, std::memory_order_relaxed);
     av_log_default_callback(ptr, level, fmt, vl);
 }
@@ -37,7 +37,8 @@ std::string av_error_string(int errnum) {
 }
 
 std::string format_hms(double seconds) {
-    if (seconds < 0) seconds = 0;
+    if (seconds < 0)
+        seconds = 0;
     const auto total_ms = static_cast<int64_t>(seconds * 1000 + 0.5);
     const int h = static_cast<int>(total_ms / 3600000);
     const int m = static_cast<int>((total_ms / 60000) % 60);
@@ -53,7 +54,8 @@ double pts_to_seconds(int64_t pts, AVRational time_base) {
 }
 
 uint64_t bitrate_kbps(uint64_t bytes, double seconds) {
-    if (seconds <= 0) return 0;
+    if (seconds <= 0)
+        return 0;
     return static_cast<uint64_t>(static_cast<double>(bytes) * 8.0 / 1000.0 / seconds + 0.5);
 }
 
@@ -68,13 +70,23 @@ void log_stream_stats(const std::string& label, const StreamSnapshot& snap, doub
 
 int stop_aware_interrupt(void* opaque) {
     const auto* relay = static_cast<const RtmpRelay*>(opaque);
-    return relay  && relay->stop_requested() ? 1 : 0;
+    return relay && relay->stop_requested() ? 1 : 0;
 }
 
 } // namespace
 
 int RtmpRelay::run() {
     av_log_set_callback(av_log_relay_callback);
+
+    if (!config_.transformer_path.empty()) {
+        try {
+            transformer_plugin_ = std::make_unique<TransformerPlugin>(config_.transformer_path);
+            LOG << "Loaded transformer plugin: " << config_.transformer_path;
+        } catch (const std::exception& e) {
+            LOG << e.what();
+            return 1;
+        }
+    }
 
     const int network_init = avformat_network_init();
     if (network_init < 0) {
@@ -109,6 +121,7 @@ int RtmpRelay::relay_loop() {
         }
 
         log_stream_map();
+        create_transformers();
 
         if (!output_ctx_ && !open_output())
             LOG << "Output is not available yet; relay will keep ingesting and retry";
@@ -116,12 +129,13 @@ int RtmpRelay::relay_loop() {
         relay_packets();
 
         LOG << "Input disconnected, waiting for new publisher";
+        destroy_transformers();
         close_input();
         reset_input_state();
     }
 
     LOG << "Stop requested";
-    if (output_ctx_ )
+    if (output_ctx_)
         av_write_trailer(output_ctx_);
     return 0;
 }
@@ -190,16 +204,41 @@ void RtmpRelay::relay_packets() {
                 need_video_dts_offset_ = false;
                 LOG << "Applying video DTS offset: " << video_dts_offset_;
             }
-            if (packet.pts != AV_NOPTS_VALUE) packet.pts += video_dts_offset_;
-            if (packet.dts != AV_NOPTS_VALUE) packet.dts += video_dts_offset_;
+            if (packet.pts != AV_NOPTS_VALUE)
+                packet.pts += video_dts_offset_;
+            if (packet.dts != AV_NOPTS_VALUE)
+                packet.dts += video_dts_offset_;
         } else if (packet.stream_index == audio_stream_index_) {
             if (need_audio_dts_offset_ && packet.dts != AV_NOPTS_VALUE) {
                 audio_dts_offset_ = last_written_audio_dts_ + 1 - packet.dts;
                 need_audio_dts_offset_ = false;
                 LOG << "Applying audio DTS offset: " << audio_dts_offset_;
             }
-            if (packet.pts != AV_NOPTS_VALUE) packet.pts += audio_dts_offset_;
-            if (packet.dts != AV_NOPTS_VALUE) packet.dts += audio_dts_offset_;
+            if (packet.pts != AV_NOPTS_VALUE)
+                packet.pts += audio_dts_offset_;
+            if (packet.dts != AV_NOPTS_VALUE)
+                packet.dts += audio_dts_offset_;
+        }
+
+        // Apply transformer if one exists for this stream.
+        if (static_cast<size_t>(packet.stream_index) < stream_transformers_.size()) {
+            auto* t = stream_transformers_[packet.stream_index];
+            if (t) {
+                const size_t max_out = transformer_plugin_->get_max_size(t, packet.size);
+                transform_buf_.resize(max_out);
+                const size_t out_size = transformer_plugin_->transform(t, packet.data, packet.size, transform_buf_.data());
+
+                const int64_t pts = packet.pts, dts = packet.dts, duration = packet.duration;
+                const int flags = packet.flags, si = packet.stream_index;
+                av_packet_unref(&packet);
+                av_new_packet(&packet, static_cast<int>(out_size));
+                memcpy(packet.data, transform_buf_.data(), out_size);
+                packet.pts = pts;
+                packet.dts = dts;
+                packet.duration = duration;
+                packet.flags = flags;
+                packet.stream_index = si;
+            }
         }
 
         // Save before av_interleaved_write_frame: it calls av_packet_move_ref
@@ -351,7 +390,7 @@ bool RtmpRelay::open_output() {
 }
 
 bool RtmpRelay::ensure_output() {
-    if (output_ctx_ )
+    if (output_ctx_)
         return true;
 
     const auto now = std::chrono::steady_clock::now();
@@ -389,6 +428,33 @@ void RtmpRelay::close_input() {
 
     avformat_close_input(&input_ctx_);
     input_ctx_ = nullptr;
+}
+
+void RtmpRelay::create_transformers() {
+    if (!transformer_plugin_)
+        return;
+
+    stream_transformers_.resize(input_ctx_->nb_streams, nullptr);
+    for (unsigned int i = 0; i < input_ctx_->nb_streams; ++i) {
+        const AVCodecDescriptor* desc = avcodec_descriptor_get(input_ctx_->streams[i]->codecpar->codec_id);
+        const char* codec_name = desc ? desc->name : "unknown";
+        stream_transformers_[i] = transformer_plugin_->create(codec_name, config_.transformer_params.c_str());
+        if (stream_transformers_[i])
+            LOG << "Transformer created for stream #" << i << " (" << codec_name << ")";
+        else
+            LOG << "No transformer for stream #" << i << " (" << codec_name << "), passthrough";
+    }
+}
+
+void RtmpRelay::destroy_transformers() {
+    if (!transformer_plugin_)
+        return;
+
+    for (auto* ctx: stream_transformers_) {
+        if (ctx)
+            transformer_plugin_->destroy(ctx);
+    }
+    stream_transformers_.clear();
 }
 
 void RtmpRelay::reset_input_state() {
@@ -448,8 +514,10 @@ void RtmpRelay::print_stats() {
     {
         std::ostringstream oss;
         oss << "[pts]";
-        if (a_pts != AV_NOPTS_VALUE) oss << " audio: " << format_hms(a_sec);
-        if (v_pts != AV_NOPTS_VALUE) oss << (a_pts != AV_NOPTS_VALUE ? ", " : " ") << "video: " << format_hms(v_sec);
+        if (a_pts != AV_NOPTS_VALUE)
+            oss << " audio: " << format_hms(a_sec);
+        if (v_pts != AV_NOPTS_VALUE)
+            oss << (a_pts != AV_NOPTS_VALUE ? ", " : " ") << "video: " << format_hms(v_sec);
         if (a_pts != AV_NOPTS_VALUE && v_pts != AV_NOPTS_VALUE) {
             const double diff = a_sec - v_sec;
             oss << ", diff: " << (diff >= 0 ? "+" : "") << std::fixed << std::setprecision(3) << diff;

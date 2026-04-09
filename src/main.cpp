@@ -27,6 +27,14 @@ AppConfig parse_config(int argc, char** argv) {
             if (secs <= 0)
                 throw std::invalid_argument("--stats-period must be positive");
             app_config.stats_period = std::chrono::seconds(secs);
+        } else if (arg == "--transformer") {
+            if (++i >= argc)
+                throw std::invalid_argument("--transformer requires a path");
+            app_config.relay.transformer_path = argv[i];
+        } else if (arg == "--transformer-params") {
+            if (++i >= argc)
+                throw std::invalid_argument("--transformer-params requires a value");
+            app_config.relay.transformer_params = argv[i];
         } else if (!arg.empty() && arg.front() == '-') {
             throw std::invalid_argument("unknown option: " + arg);
         } else {
@@ -46,7 +54,9 @@ AppConfig parse_config(int argc, char** argv) {
 void print_usage(const char* exe_name) {
     std::cerr << "Usage: " << exe_name << " [options] [input_rtmp_url] [output_rtmp_url]\n"
               << "Options:\n"
-              << "  --stats-period <secs>  Stats print interval (default: 10s)\n"
+              << "  --transformer <path>         Transformer plugin .so\n"
+              << "  --transformer-params <str>   Params passed to transformer_create\n"
+              << "  --stats-period <secs>        Stats print interval (default: 10s)\n"
               << "Defaults:\n"
               << "  input:  rtmp://0.0.0.0:19350/live/in\n"
               << "  output: rtmp://127.0.0.1:19351/live/out\n";

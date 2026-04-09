@@ -6,16 +6,22 @@ extern "C" {
 #include <libavutil/avutil.h>
 }
 
+#include "transformer.h"
+
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 struct RelayConfig {
     std::string input_url;
     std::string output_url;
+    std::string transformer_path;
+    std::string transformer_params;
 };
 
 struct StreamSnapshot {
@@ -23,9 +29,7 @@ struct StreamSnapshot {
     uint64_t key_frames = 0;
     uint64_t bytes = 0;
 
-    StreamSnapshot operator-(const StreamSnapshot& rhs) const {
-        return {frames - rhs.frames, key_frames - rhs.key_frames, bytes - rhs.bytes};
-    }
+    StreamSnapshot operator-(const StreamSnapshot& rhs) const { return {frames - rhs.frames, key_frames - rhs.key_frames, bytes - rhs.bytes}; }
 };
 
 struct StreamCounters {
@@ -49,15 +53,14 @@ struct StreamCounters {
     }
 
     StreamSnapshot snapshot() const {
-        return {frames.load(std::memory_order_relaxed), key_frames.load(std::memory_order_relaxed),
-                bytes.load(std::memory_order_relaxed)};
+        return {frames.load(std::memory_order_relaxed), key_frames.load(std::memory_order_relaxed), bytes.load(std::memory_order_relaxed)};
     }
 };
 
 class RtmpRelay {
 public:
     explicit RtmpRelay(const RelayConfig& config, asio::io_context& io_context, std::chrono::seconds stats_period = std::chrono::seconds(10))
-        : config_(config), stats_timer_(io_context), stats_period_(stats_period) {}
+      : config_(config), stats_timer_(io_context), stats_period_(stats_period) {}
 
     [[nodiscard]] int run();
     void request_stop();
@@ -79,6 +82,9 @@ private:
     void reset_input_state();
     void log_stream_map() const;
 
+    void create_transformers();
+    void destroy_transformers();
+
     RelayConfig config_;
     std::atomic<bool> stop_requested_{false};
     struct AVFormatContext* input_ctx_ = nullptr;
@@ -87,6 +93,10 @@ private:
     int audio_stream_index_ = -1;
     asio::steady_timer stats_timer_;
     std::chrono::seconds stats_period_;
+
+    std::unique_ptr<TransformerPlugin> transformer_plugin_;
+    std::vector<struct TransformerContext*> stream_transformers_;
+    std::vector<uint8_t> transform_buf_;
 
     StreamCounters video_counters_;
     StreamCounters audio_counters_;
@@ -107,7 +117,7 @@ private:
 class RelayApp {
 public:
     explicit RelayApp(const RelayConfig& config, std::chrono::seconds stats_period = std::chrono::seconds(10))
-        : signals_(io_context_, SIGINT, SIGTERM), relay_(config, io_context_, stats_period) {}
+      : signals_(io_context_, SIGINT, SIGTERM), relay_(config, io_context_, stats_period) {}
 
     [[nodiscard]] int run();
 
