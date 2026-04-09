@@ -217,25 +217,40 @@ void RtmpRelay::relay_packets() {
 }
 
 bool RtmpRelay::open_input() {
-    input_ctx_ = avformat_alloc_context();
-    if (input_ctx_ == nullptr) {
-        LOG << "avformat_alloc_context() failed for input";
-        return false;
-    }
-
-    input_ctx_->interrupt_callback = {stop_aware_interrupt, this};
-
-    AVDictionary* options = nullptr;
-    av_dict_set(&options, "listen", "1", 0);
     LOG << "Listening for RTMP publisher on " << config_.input_url;
-    int rc = avformat_open_input(&input_ctx_, config_.input_url.c_str(), nullptr, &options);
-    av_dict_free(&options);
-    if (rc < 0) {
+
+    while (!stop_requested()) {
+        input_ctx_ = avformat_alloc_context();
+        if (input_ctx_ == nullptr) {
+            LOG << "avformat_alloc_context() failed for input";
+            return false;
+        }
+
+        input_ctx_->interrupt_callback = {stop_aware_interrupt, this};
+
+        AVDictionary* options = nullptr;
+        av_dict_set(&options, "listen", "1", 0);
+        av_dict_set(&options, "listen_timeout", "1000", 0);
+        int rc = avformat_open_input(&input_ctx_, config_.input_url.c_str(), nullptr, &options);
+        av_dict_free(&options);
+
+        if (rc == 0)
+            break;
+
+        // avformat_open_input frees input_ctx_ on failure
+        input_ctx_ = nullptr;
+
+        if (rc == AVERROR(ETIMEDOUT) || rc == AVERROR_EXIT)
+            continue;
+
         LOG << "avformat_open_input(" << config_.input_url << ") failed: " << av_error_string(rc);
         return false;
     }
 
-    rc = avformat_find_stream_info(input_ctx_, nullptr);
+    if (stop_requested())
+        return false;
+
+    int rc = avformat_find_stream_info(input_ctx_, nullptr);
     if (rc < 0) {
         LOG << "avformat_find_stream_info() failed: " << av_error_string(rc);
         return false;
@@ -293,6 +308,7 @@ bool RtmpRelay::open_output() {
     if ((output_ctx_->oformat->flags & AVFMT_NOFILE) == 0) {
         AVDictionary* options = nullptr;
         av_dict_set(&options, "tcp_nodelay", "1", 0);
+        av_dict_set(&options, "timeout", "2000000", 0);
         rc = avio_open2(&output_ctx_->pb, config_.output_url.c_str(), AVIO_FLAG_WRITE, &output_ctx_->interrupt_callback, &options);
         av_dict_free(&options);
         if (rc < 0) {
