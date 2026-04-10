@@ -113,6 +113,7 @@ private:
     int64_t audio_dts_offset_ = 0;
     int64_t last_written_video_dts_ = AV_NOPTS_VALUE;
     int64_t last_written_audio_dts_ = AV_NOPTS_VALUE;
+    bool stats_timer_started_ = false;
 };
 
 class RelayApp {

@@ -112,13 +112,17 @@ bool RtmpRelay::stop_requested() const {
 
 int RtmpRelay::relay_loop() {
     LOG << "Relay started: " << config_.input_url << " -> " << config_.output_url;
-    start_stats_timer([this] { print_stats(); });
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
         if (!open_input()) {
             if (stop_requested_.load(std::memory_order_relaxed))
                 break;
             return 1;
+        }
+
+        if (!stats_timer_started_) {
+            start_stats_timer([this] { print_stats(); });
+            stats_timer_started_ = true;
         }
 
         log_stream_map();
