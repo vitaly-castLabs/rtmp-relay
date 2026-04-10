@@ -1,32 +1,37 @@
 # RTMP Relay
 
-Small 1-to-1 RTMP relay built with standalone Asio and FFmpeg.
+1-to-1 RTMP relay built with standalone Asio and FFmpeg's AV libraries. Can be used for monitoring or alteration (adding / stripping metadata, re-encoding, encryption, etc).
 
 ## Build
 
 ```bash
 cmake -S . -B build
-cmake --build build
+cmake --build build -j
 ```
 
 ## Usage
+
+Default settings (listens on `rtmp://0.0.0.0:19350/live/in` and forwards to `rtmp://localhost:19351/live/out`):
+```bash
+./build/rtmp_relay
+```
+or 
+```bash
+./build/rtmp_relay rtmp://0.0.0.0:19350/live/in rtmp://rtmp.server.ip.here/live/stream
+```
+
+Full setup. Start the relay first:
 
 ```bash
 ./build/rtmp_relay
 ```
 
-Override default URLs with positional arguments:
-
-```bash
-./build/rtmp_relay rtmp://0.0.0.0:19350/live/in rtmp://127.0.0.1:19351/live/out
-```
-
-Fire up the player:
+Then fire up the player:
 ```bash
 ffplay -fflags nobuffer -flags low_delay -listen 1 rtmp://0.0.0.0:19351/live/out
 ```
 
-Then publish into it with something like (stream a pre-encoded file in a loop):
+Then publish into the relay with something like this (stream a pre-encoded file in a loop):
 
 ```bash
 ffmpeg -re -stream_loop -1 -i sample.mp4 -c copy -f flv rtmp://127.0.0.1:19350/live/in
