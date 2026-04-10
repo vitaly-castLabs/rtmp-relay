@@ -1,10 +1,10 @@
-#include "transformer_api.h"
+#include "transform_api.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-struct TransformerContext {
+struct TransformContext {
     FILE* file;
 };
 
@@ -16,36 +16,36 @@ struct TransformerContext {
  */
 static const uint8_t filler_nalu[16] = {0x00, 0x00, 0x00, 0x0C, 0x0C, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x80};
 
-TransformerContext* transformer_create(const char* codec_name, const char* params) {
+TransformContext* transform_create(const char* codec_name, const char* params) {
     if (strcmp(codec_name, "h264") != 0)
         return NULL;
 
     const char* prefix = "file=";
     const char* p = params ? strstr(params, prefix) : NULL;
     if (!p) {
-        fprintf(stderr, "sample_transformer: missing file= in params\n");
+        fprintf(stderr, "transform: missing file= in params\n");
         return NULL;
     }
 
     const char* path = p + strlen(prefix);
     FILE* f = fopen(path, "wb");
     if (!f) {
-        perror("sample_transformer: fopen");
+        perror("transform: fopen");
         return NULL;
     }
 
-    TransformerContext* ctx = calloc(1, sizeof(*ctx));
+    TransformContext* ctx = calloc(1, sizeof(*ctx));
     ctx->file = f;
     return ctx;
 }
 
-void transformer_destroy(TransformerContext* ctx) {
+void transform_destroy(TransformContext* ctx) {
     if (ctx->file)
         fclose(ctx->file);
     free(ctx);
 }
 
-size_t transformer_get_max_size(const TransformerContext* ctx, size_t frame_size) {
+size_t transform_get_max_size(const TransformContext* ctx, size_t frame_size) {
     (void)ctx;
     return frame_size + sizeof(filler_nalu);
 }
@@ -66,7 +66,7 @@ static void write_annex_b(FILE* f, const uint8_t* avcc, size_t avcc_size) {
     }
 }
 
-size_t transformer_transform(TransformerContext* ctx, const uint8_t* src, size_t src_size, uint8_t* dst) {
+size_t transform_apply(TransformContext* ctx, const uint8_t* src, size_t src_size, uint8_t* dst) {
     if (ctx->file)
         write_annex_b(ctx->file, src, src_size);
 

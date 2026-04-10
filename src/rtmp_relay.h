@@ -6,7 +6,7 @@ extern "C" {
 #include <libavutil/avutil.h>
 }
 
-#include "transformer.h"
+#include "transform.h"
 
 #include <atomic>
 #include <chrono>
@@ -20,8 +20,8 @@ extern "C" {
 struct RelayConfig {
     std::string input_url;
     std::string output_url;
-    std::string transformer_path;
-    std::string transformer_params;
+    std::string transform_path;
+    std::string transform_params;
 };
 
 struct StreamSnapshot {
@@ -82,8 +82,8 @@ private:
     void reset_input_state();
     void log_stream_map() const;
 
-    void create_transformers();
-    void destroy_transformers();
+    void create_transforms();
+    void destroy_transforms();
 
     RelayConfig config_;
     std::atomic<bool> stop_requested_{false};
@@ -94,8 +94,8 @@ private:
     asio::steady_timer stats_timer_;
     std::chrono::seconds stats_period_;
 
-    std::unique_ptr<TransformerPlugin> transformer_plugin_;
-    std::vector<struct TransformerContext*> stream_transformers_;
+    std::unique_ptr<TransformPlugin> transform_plugin_;
+    std::vector<struct TransformContext*> stream_transforms_;
     std::vector<uint8_t> transform_buf_;
 
     StreamCounters video_counters_;

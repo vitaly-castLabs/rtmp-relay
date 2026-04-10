@@ -39,34 +39,33 @@ ffmpeg -lavfi "testsrc=640x480,realtime;sine=10:40,arealtime" -f flv rtmp://127.
 
 > `realtime`/`arealtime` are the `-lavfi` equivalent of `-re`, throttling synthetic sources to wall-clock speed.
 
-## Transformer plugins
+## Transform plugins
 
 The relay can load a shared library that transforms media frames on the fly.
-A transformer is created per stream; if the plugin returns NULL for a given
+A transform is created per stream; if the plugin returns NULL for a given
 codec the stream is passed through unchanged.
 
 ```bash
-./build/rtmp_relay --transformer ./build/sample_transformer.so \
-    --transformer-params "file=out.h264" \
+./build/rtmp_relay --transform "dl=./build/transform.so;file=out.h264" \
     rtmp://0.0.0.0:19350/live/in rtmp://127.0.0.1:19351/live/out
 ```
 
 The plugin must export four C functions declared in
-[`include/transformer_api.h`](include/transformer_api.h):
+[`include/transform_api.h`](include/transform_api.h):
 
 ```c
-TransformerContext* transformer_create(const char* codec_name, const char* params);
-void               transformer_destroy(TransformerContext* ctx);
-size_t             transformer_get_max_size(const TransformerContext* ctx, size_t frame_size);
-size_t             transformer_transform(TransformerContext* ctx,
-                                         const uint8_t* src, size_t src_size,
-                                         uint8_t* dst);
+TransformContext* transform_create(const char* codec_name, const char* params);
+void              transform_destroy(TransformContext* ctx);
+size_t            transform_get_max_size(const TransformContext* ctx, size_t frame_size);
+size_t            transform_apply(TransformContext* ctx,
+                                  const uint8_t* src, size_t src_size,
+                                  uint8_t* dst);
 ```
 
 `codec_name` is the ffmpeg codec descriptor name (`"h264"`, `"aac"`, `"hevc"`,
 `"av1"`, etc.). Frame data arrives in AVCC (length-prefixed) format for H.264/HEVC.
 
-A sample plugin (`samples/sample_transformer.c`) is included. It handles H.264
+A sample plugin ([`samples/transform.c`](samples/transform.c)) is included. It handles H.264
 only, dumps every frame to a file as Annex B, and appends a 16-byte filler NALU
 to each frame before returning it to the relay.
 

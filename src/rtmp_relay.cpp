@@ -78,10 +78,10 @@ int stop_aware_interrupt(void* opaque) {
 int RtmpRelay::run() {
     av_log_set_callback(av_log_relay_callback);
 
-    if (!config_.transformer_path.empty()) {
+    if (!config_.transform_path.empty()) {
         try {
-            transformer_plugin_ = std::make_unique<TransformerPlugin>(config_.transformer_path);
-            LOG << "Loaded transformer plugin: " << config_.transformer_path;
+            transform_plugin_ = std::make_unique<TransformPlugin>(config_.transform_path);
+            LOG << "Loaded transform plugin: " << config_.transform_path;
         } catch (const std::exception& e) {
             LOG << e.what();
             return 1;
@@ -121,7 +121,7 @@ int RtmpRelay::relay_loop() {
         }
 
         log_stream_map();
-        create_transformers();
+        create_transforms();
 
         if (!output_ctx_ && !open_output())
             LOG << "Output is not available yet; relay will keep ingesting and retry";
@@ -129,7 +129,7 @@ int RtmpRelay::relay_loop() {
         relay_packets();
 
         LOG << "Input disconnected, waiting for new publisher";
-        destroy_transformers();
+        destroy_transforms();
         close_input();
         reset_input_state();
     }
@@ -220,13 +220,13 @@ void RtmpRelay::relay_packets() {
                 packet.dts += audio_dts_offset_;
         }
 
-        // Apply transformer if one exists for this stream.
-        if (static_cast<size_t>(packet.stream_index) < stream_transformers_.size()) {
-            auto* t = stream_transformers_[packet.stream_index];
+        // Apply transform if one exists for this stream.
+        if (static_cast<size_t>(packet.stream_index) < stream_transforms_.size()) {
+            auto* t = stream_transforms_[packet.stream_index];
             if (t) {
-                const size_t max_out = transformer_plugin_->get_max_size(t, packet.size);
+                const size_t max_out = transform_plugin_->get_max_size(t, packet.size);
                 transform_buf_.resize(max_out);
-                const size_t out_size = transformer_plugin_->transform(t, packet.data, packet.size, transform_buf_.data());
+                const size_t out_size = transform_plugin_->apply(t, packet.data, packet.size, transform_buf_.data());
 
                 const int64_t pts = packet.pts, dts = packet.dts, duration = packet.duration;
                 const int flags = packet.flags, si = packet.stream_index;
@@ -430,31 +430,31 @@ void RtmpRelay::close_input() {
     input_ctx_ = nullptr;
 }
 
-void RtmpRelay::create_transformers() {
-    if (!transformer_plugin_)
+void RtmpRelay::create_transforms() {
+    if (!transform_plugin_)
         return;
 
-    stream_transformers_.resize(input_ctx_->nb_streams, nullptr);
+    stream_transforms_.resize(input_ctx_->nb_streams, nullptr);
     for (unsigned int i = 0; i < input_ctx_->nb_streams; ++i) {
         const AVCodecDescriptor* desc = avcodec_descriptor_get(input_ctx_->streams[i]->codecpar->codec_id);
         const char* codec_name = desc ? desc->name : "unknown";
-        stream_transformers_[i] = transformer_plugin_->create(codec_name, config_.transformer_params.c_str());
-        if (stream_transformers_[i])
-            LOG << "Transformer created for stream #" << i << " (" << codec_name << ")";
+        stream_transforms_[i] = transform_plugin_->create(codec_name, config_.transform_params.c_str());
+        if (stream_transforms_[i])
+            LOG << "Transform created for stream #" << i << " (" << codec_name << ")";
         else
-            LOG << "No transformer for stream #" << i << " (" << codec_name << "), passthrough";
+            LOG << "No transform for stream #" << i << " (" << codec_name << "), passthrough";
     }
 }
 
-void RtmpRelay::destroy_transformers() {
-    if (!transformer_plugin_)
+void RtmpRelay::destroy_transforms() {
+    if (!transform_plugin_)
         return;
 
-    for (auto* ctx: stream_transformers_) {
+    for (auto* ctx: stream_transforms_) {
         if (ctx)
-            transformer_plugin_->destroy(ctx);
+            transform_plugin_->destroy(ctx);
     }
-    stream_transformers_.clear();
+    stream_transforms_.clear();
 }
 
 void RtmpRelay::reset_input_state() {

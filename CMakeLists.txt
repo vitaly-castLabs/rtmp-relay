@@ -47,7 +47,7 @@ target_link_libraries(asio INTERFACE Threads::Threads)
 add_executable(rtmp_relay
     src/main.cpp
     src/rtmp_relay.cpp
-    src/transformer.cpp
+    src/transform.cpp
 )
 
 target_include_directories(rtmp_relay PRIVATE src)
@@ -63,6 +63,6 @@ target_link_libraries(
         ${CMAKE_DL_LIBS}
 )
 
-add_library(sample_transformer SHARED samples/sample_transformer.c)
-target_include_directories(sample_transformer PRIVATE include)
-set_target_properties(sample_transformer PROPERTIES PREFIX "" OUTPUT_NAME "sample_transformer")
+add_library(transform SHARED samples/transform.c)
+target_include_directories(transform PRIVATE include)
+set_target_properties(transform PROPERTIES PREFIX "" OUTPUT_NAME "transform")
