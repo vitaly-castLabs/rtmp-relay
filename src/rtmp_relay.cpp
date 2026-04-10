@@ -1,6 +1,7 @@
 #include "rtmp_relay.h"
 
 #include "logger.h"
+#include "video_param_sets.h"
 
 extern "C" {
 #include <libavcodec/codec_desc.h>
@@ -224,9 +225,16 @@ void RtmpRelay::relay_packets() {
         if (static_cast<size_t>(packet.stream_index) < stream_transforms_.size()) {
             auto* t = stream_transforms_[packet.stream_index];
             if (t) {
-                const size_t max_out = transform_plugin_->get_max_size(t, packet.size);
+                const uint8_t* transform_src = packet.data;
+                size_t transform_src_size = static_cast<size_t>(packet.size);
+                if (prepend_param_sets_for_transform(input_stream->codecpar, packet, transform_input_buf_)) {
+                    transform_src = transform_input_buf_.data();
+                    transform_src_size = transform_input_buf_.size();
+                }
+
+                const size_t max_out = transform_plugin_->get_max_size(t, transform_src_size);
                 transform_buf_.resize(max_out);
-                const size_t out_size = transform_plugin_->apply(t, packet.data, packet.size, transform_buf_.data());
+                const size_t out_size = transform_plugin_->apply(t, transform_src, transform_src_size, transform_buf_.data());
 
                 const int64_t pts = packet.pts, dts = packet.dts, duration = packet.duration;
                 const int flags = packet.flags, si = packet.stream_index;

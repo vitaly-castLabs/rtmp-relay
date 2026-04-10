@@ -48,6 +48,7 @@ add_executable(rtmp_relay
     src/main.cpp
     src/rtmp_relay.cpp
     src/transform.cpp
+    src/video_param_sets.cpp
 )
 
 target_include_directories(rtmp_relay PRIVATE src)

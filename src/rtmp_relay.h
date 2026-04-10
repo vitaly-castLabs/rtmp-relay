@@ -96,6 +96,7 @@ private:
 
     std::unique_ptr<TransformPlugin> transform_plugin_;
     std::vector<struct TransformContext*> stream_transforms_;
+    std::vector<uint8_t> transform_input_buf_;
     std::vector<uint8_t> transform_buf_;
 
     StreamCounters video_counters_;

@@ -6,6 +6,7 @@
 
 struct TransformContext {
     FILE* file;
+    int is_h264;
 };
 
 /* AVCC length-prefixed filler NALU (16 bytes total):
@@ -17,7 +18,9 @@ struct TransformContext {
 static const uint8_t filler_nalu[16] = {0x00, 0x00, 0x00, 0x0C, 0x0C, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x80};
 
 TransformContext* transform_create(const char* codec_name, const char* params) {
-    if (strcmp(codec_name, "h264") != 0)
+    const int is_h264 = strcmp(codec_name, "h264") == 0;
+    const int is_hevc = strcmp(codec_name, "hevc") == 0;
+    if (!is_h264 && !is_hevc)
         return NULL;
 
     const char* prefix = "file=";
@@ -36,6 +39,7 @@ TransformContext* transform_create(const char* codec_name, const char* params) {
 
     TransformContext* ctx = calloc(1, sizeof(*ctx));
     ctx->file = f;
+    ctx->is_h264 = is_h264;
     return ctx;
 }
 
@@ -46,8 +50,7 @@ void transform_destroy(TransformContext* ctx) {
 }
 
 size_t transform_get_max_size(const TransformContext* ctx, size_t frame_size) {
-    (void)ctx;
-    return frame_size + sizeof(filler_nalu);
+    return frame_size + (ctx->is_h264 ? sizeof(filler_nalu) : 0);
 }
 
 static const uint8_t annex_b_start_code[4] = {0x00, 0x00, 0x00, 0x01};
@@ -71,6 +74,9 @@ size_t transform_apply(TransformContext* ctx, const uint8_t* src, size_t src_siz
         write_annex_b(ctx->file, src, src_size);
 
     memcpy(dst, src, src_size);
-    memcpy(dst + src_size, filler_nalu, sizeof(filler_nalu));
-    return src_size + sizeof(filler_nalu);
+    if (ctx->is_h264) {
+        memcpy(dst + src_size, filler_nalu, sizeof(filler_nalu));
+        return src_size + sizeof(filler_nalu);
+    }
+    return src_size;
 }
